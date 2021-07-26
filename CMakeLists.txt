@@ -22,7 +22,7 @@ add_definitions (-DMCTP_HAVE_FILEIO)
 add_definitions (-DMCTP_HAVE_STDIO)
 add_definitions (-DMCTP_DEFAULT_ALLOC)
 
-add_library (mctp STATIC alloc.c astlpc.c crc32.c core.c log.c libmctp.h serial.c)
+add_library (mctp STATIC alloc.c astlpc.c crc32.c core.c log.c libmctp.h serial.c smbus.c)
 
 target_include_directories (mctp PUBLIC
                             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
@@ -59,5 +59,5 @@ target_link_libraries (test_core mctp)
 add_test (NAME core COMMAND test_core)
 
 install (TARGETS mctp DESTINATION lib)
-install (FILES libmctp.h DESTINATION include)
+install (FILES libmctp.h libmctp-smbus.h DESTINATION include)
 

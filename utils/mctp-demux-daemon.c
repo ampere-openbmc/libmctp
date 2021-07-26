@@ -11,6 +11,8 @@
 #include "libmctp-serial.h"
 #include "libmctp-astlpc.h"
 #include "utils/mctp-capture.h"
+#include "libmctp-smbus.h"
+#include "libmctp-log.h"
 
 #include <assert.h>
 #include <err.h>
@@ -249,6 +251,60 @@ static int binding_astlpc_process(struct binding *binding)
 	return mctp_astlpc_poll(binding->data);
 }
 
+static int binding_smbus_init(struct mctp *mctp, struct binding *binding,
+		mctp_eid_t eid, int n_params,
+		char * const *params __attribute__((unused)))
+{
+	struct mctp_binding_smbus *smbus;
+	uint8_t smbus_bus, in_addr;
+	uint8_t path[256];
+	int fd;
+	int rc;
+
+	if (n_params != 2) {
+		warnx("smbus binding requires bus and in_addr parameter");
+		return -1;
+	}
+
+	/* smbus_bus: the i2c bus number is used to send or receive mctp packet.
+	 *            We use one i2c bus for both purpose: master and slave.
+	 * in_addr:   is the i2c slave address of smbus_bus when it acts in slave
+	 *            mode.
+	 * TBD: We only support fixed address now. Dynamic address assignment
+	 * will be supported in future.
+	 */
+	smbus_bus = (uint8_t)strtoul(params[0], NULL, 0);
+	in_addr = (uint8_t)strtoul(params[1], NULL,0);
+
+	smbus = mctp_smbus_init(in_addr);
+	assert(smbus);
+
+	rc = mctp_smbus_open_fd(smbus, smbus_bus, in_addr);
+	if (rc)
+		return -1;
+
+	mctp_register_bus(mctp, mctp_binding_smbus_core(smbus), eid);
+	binding->data = smbus;
+
+	return 0;
+}
+
+static int binding_smbus_init_pollfd(struct binding *binding,
+				     struct pollfd *pollfd)
+{
+	return mctp_smbus_init_pollfd(binding->data, pollfd);
+}
+
+static int binding_smbus_get_fd(struct binding *binding)
+{
+	return mctp_smbus_get_in_fd(binding->data);
+}
+
+static int binding_smbus_process(struct binding *binding)
+{
+	return mctp_smbus_read(binding->data);
+}
+
 struct binding bindings[] = {
 	{
 		.name = "null",
@@ -267,6 +323,12 @@ struct binding bindings[] = {
 		.destroy = binding_astlpc_destroy,
 		.init_pollfd = binding_astlpc_init_pollfd,
 		.process = binding_astlpc_process,
+	},
+	{
+		.name = "smbus",
+		.init = binding_smbus_init,
+		.init_pollfd = binding_smbus_init_pollfd,
+		.process = binding_smbus_process,
 	}
 };
 

@@ -658,7 +658,7 @@ int main(int argc, char * const *argv)
 	ctx->pcap.socket.linktype = -1;
 
 	for (;;) {
-		rc = getopt_long(argc, argv, "b:es::v", options, NULL);
+		rc = getopt_long(argc, argv, "b:s:e:v", options, NULL);
 		if (rc == -1)
 			break;
 		switch (rc) {

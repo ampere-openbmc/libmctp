@@ -56,6 +56,14 @@ struct mctp_pktbuf {
 	unsigned char data[];
 };
 
+/* Routing Table */
+#define EID_ROUTING_TABLE_SIZE	16
+
+struct eid_routing_entry {
+	uint8_t eid;
+	uint8_t addr;
+};
+
 struct mctp_binding;
 
 struct mctp_pktbuf *mctp_pktbuf_alloc(struct mctp_binding *hw, size_t len);

@@ -1,8 +1,8 @@
 ACLOCAL_AMFLAGS = -I m4
 
 lib_LTLIBRARIES = libmctp.la
-libmctp_la_SOURCES = core.c alloc.c log.c \
-		     libmctp-alloc.h libmctp-log.h \
+libmctp_la_SOURCES = core.c alloc.c log.c utils.c \
+		     libmctp-alloc.h libmctp-log.h utils.h \
 		     libmctp-cmds.h
 include_HEADERS = libmctp.h
 

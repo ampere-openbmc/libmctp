@@ -23,6 +23,7 @@
 #include "libmctp-log.h"
 #include "libmctp-smbus.h"
 #include "libmctp.h"
+#include "utils.h"
 
 #define binding_to_smbus(b) \
 	container_of(b, struct mctp_binding_smbus, binding)
@@ -30,20 +31,13 @@
 #define MCTP_SMBUS_COMMAND_CODE		0x0f
 #define SMBUS_PEC_SIZE			1
 
-#define EID_ROUTING_TABLE_SIZE		16
-
-struct eid_routing_entry {
-	uint8_t eid;
-	uint8_t addr;
-};
-
 struct mctp_binding_smbus {
 	struct mctp_binding binding;
 #ifdef MCTP_HAVE_FILEIO
 	int out_fd;
 	int in_fd;
 #endif
-	struct eid_routing_entry eid_table[EID_ROUTING_TABLE_SIZE];
+	struct eid_routing_entry routing_table[EID_ROUTING_TABLE_SIZE];
 	uint8_t src_addr;
 	mctp_smbus_tx_fn tx_fn;
 	const void *tx_fn_data;
@@ -95,17 +89,18 @@ static uint8_t cal_pec(uint8_t *data, uint8_t len)
 	return pec;
 }
 
-static void add_table(struct mctp_binding_smbus *smbus, uint8_t eid, uint8_t addr)
+static void add_routing_table(struct mctp_binding_smbus *smbus, uint8_t eid, uint8_t addr)
 {
 	int i;
 
+	mctp_prdebug("Add Routing Table: addr=%x, eid=%d\n", addr, eid);
 	for(i = 0; i< EID_ROUTING_TABLE_SIZE; i++) {
-		if (smbus->eid_table[i].eid == 0) {
-			smbus->eid_table[i].eid = eid;
-			smbus->eid_table[i].addr = addr;
+		if (smbus->routing_table[i].eid == 0) {
+			smbus->routing_table[i].eid = eid;
+			smbus->routing_table[i].addr = addr;
 			return;
-		} else if (smbus->eid_table[i].eid == eid) {
-			smbus->eid_table[i].addr = addr;
+		} else if (smbus->routing_table[i].eid == eid) {
+			smbus->routing_table[i].addr = addr;
 			return;
 		}
 	}
@@ -117,8 +112,8 @@ static uint8_t find_addr_in_table(struct mctp_binding_smbus *smbus, uint8_t eid)
 	int i;
 
 	for(i = 0; i< EID_ROUTING_TABLE_SIZE; i++) {
-		if (smbus->eid_table[i].eid == eid)
-			return smbus->eid_table[i].addr;
+		if (smbus->routing_table[i].eid == eid)
+			return smbus->routing_table[i].addr;
 	}
 	mctp_prerr("EID does not exist in routing table\n");
 	return 0xFF;
@@ -166,6 +161,7 @@ static int mctp_smbus_rx(struct mctp_binding_smbus *smbus, uint8_t *buf, uint32_
 	}
 	memcpy(pkt->data, buf, len);
 	hdr = mctp_pktbuf_hdr(pkt);
+	add_routing_table(smbus, hdr->src, smbus_hdr->src >> 1);
 	mctp_bus_rx(&smbus->binding, pkt);
 
 	return 0;
@@ -209,16 +205,16 @@ static int mctp_binding_smbus_tx(struct mctp_binding *b,
 static int mctp_binding_smbus_start(struct mctp_binding *binding)
 {
 	struct mctp_binding_smbus *smbus = binding_to_smbus(binding);
+	int i;
+	uint8_t eid, addr;
 
 	mctp_prdebug("%s \n", __func__);
-	/* TBD: Discovery EID, I2C address on the bus */
-
-	/* FIXME: Hard code EID routing table now for testing only:
-	 * Board#1: EID 8, I2C address 0x76
-	 * Board#2: EID 9, I2C address 0x77
-	 */
-	add_table(smbus, 8, 0x76);
-	add_table(smbus, 9, 0x77);
+	/* Parse EID config file and store to routing table. */
+	if (parseEIDConfig(&(smbus->routing_table[0])) < 0)
+	{
+		mctp_prdebug("Parse eid.cfg failed \n");
+		return -1;
+	}
 
 	mctp_binding_set_tx_enabled(binding, true);
 
@@ -257,7 +253,9 @@ struct mctp_binding_smbus *mctp_smbus_init(uint8_t addr)
 
 	smbus->binding.tx = mctp_binding_smbus_tx;
 	smbus->binding.start = mctp_binding_smbus_start;
-
+#if 0
+	mctp_set_log_stdio(MCTP_LOG_DEBUG);
+#endif
 	return smbus;
 }
 

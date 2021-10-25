@@ -26,12 +26,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/timerfd.h>
+#include <time.h>
 
 #include <sys/signalfd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
+
+#define TIMER_TIMEOUT_SEC	30
 
 #if HAVE_SYSTEMD_SD_DAEMON_H
 #include <systemd/sd-daemon.h>
@@ -53,6 +57,7 @@ struct binding {
 	int (*init_pollfd)(struct binding *binding, struct pollfd *pollfd);
 	int (*process)(struct binding *binding);
 	void *data;
+	void (*scan_process)(struct binding *binding);
 };
 
 struct client {
@@ -305,6 +310,11 @@ static int binding_smbus_process(struct binding *binding)
 	return mctp_smbus_read(binding->data);
 }
 
+static void binding_smbus_scan_process(struct binding *binding)
+{
+	return mctp_smbus_scan_process(binding->data);
+}
+
 struct binding bindings[] = { {
 				      .name = "null",
 				      .init = binding_null_init,
@@ -328,6 +338,7 @@ struct binding bindings[] = { {
 				      .init = binding_smbus_init,
 				      .init_pollfd = binding_smbus_init_pollfd,
 				      .process = binding_smbus_process,
+				      .scan_process = binding_smbus_scan_process,
 			      } };
 
 struct binding *binding_lookup(const char *name)
@@ -510,6 +521,7 @@ enum {
 	FD_BINDING = 0,
 	FD_SOCKET,
 	FD_SIGNAL,
+	FD_TIMER,
 	FD_NR,
 };
 
@@ -518,6 +530,7 @@ static int run_daemon(struct ctx *ctx)
 	bool clients_changed = false;
 	sigset_t mask;
 	int rc, i;
+	struct itimerspec ts;
 
 	ctx->pollfds = malloc(FD_NR * sizeof(struct pollfd));
 
@@ -541,6 +554,21 @@ static int run_daemon(struct ctx *ctx)
 
 	ctx->pollfds[FD_SOCKET].fd = ctx->sock;
 	ctx->pollfds[FD_SOCKET].events = POLLIN;
+
+	ctx->pollfds[FD_TIMER].fd = timerfd_create(CLOCK_MONOTONIC, 0);
+	ctx->pollfds[FD_TIMER].events = POLLIN;
+	/* Set the timer */
+	ts.it_interval.tv_sec = 0;
+	ts.it_interval.tv_nsec = 0;
+	ts.it_value.tv_nsec = 0;
+	ts.it_value.tv_sec = TIMER_TIMEOUT_SEC;
+	rc = timerfd_settime(ctx->pollfds[FD_TIMER].fd,
+			0,
+			&ts,
+			NULL);
+	if (rc < 0) {
+		warn("Failed to set timer\n");
+	}
 
 	mctp_set_rx_all(ctx->mctp, rx_message, ctx);
 
@@ -613,6 +641,18 @@ static int run_daemon(struct ctx *ctx)
 			if (rc)
 				break;
 			clients_changed = true;
+		}
+
+		if (ctx->pollfds[FD_TIMER].revents) {
+			if (ctx->binding->scan_process)
+				ctx->binding->scan_process(ctx->binding);
+			rc = timerfd_settime(ctx->pollfds[FD_TIMER].fd,
+					0,
+					&ts,
+					NULL);
+			if (rc < 0) {
+				warn("Failed to set timer\n");
+			}
 		}
 
 		if (clients_changed)

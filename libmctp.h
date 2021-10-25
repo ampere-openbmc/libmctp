@@ -57,9 +57,15 @@ struct mctp_pktbuf {
 /* Routing Table */
 #define EID_ROUTING_TABLE_SIZE	16
 
+enum eid_state {
+	PLUG = 0,
+	UNPLUG = 1,
+};
+
 struct eid_routing_entry {
 	uint8_t eid;
 	uint8_t addr;
+	enum eid_state state;
 };
 
 struct mctp_binding;

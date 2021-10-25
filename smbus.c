@@ -414,4 +414,33 @@ void mctp_smbus_set_out_fd(struct mctp_binding_smbus *smbus, int fd)
 	smbus->out_fd = fd;
 }
 
+void mctp_smbus_scan_process(struct mctp_binding_smbus *smbus)
+{
+	struct i2c_msg msg;
+	struct i2c_rdwr_ioctl_data data = {&msg, 1};
+	int i, ret;
+	uint8_t tbuf = 0;
+
+	for(i = 0; i< EID_ROUTING_TABLE_SIZE; i++) {
+		if (smbus->routing_table[i].addr) {
+			mctp_prdebug("Scan %x \n", smbus->routing_table[i].addr);
+			msg.addr = smbus->routing_table[i].addr;
+			msg.flags = 0;
+			msg.len = 1;
+			msg.buf = &tbuf;
+			ret = ioctl(smbus->out_fd, I2C_RDWR, &data);
+			mctp_prdebug("Ret %d \n", ret);
+			if (ret < 0) {
+				/* Device not present */
+				smbus->routing_table[i].state = UNPLUG;
+			} else {
+				/* Device present */
+				if (smbus->routing_table[i].state == UNPLUG) {
+					/* Call SetEID command*/
+				}
+				smbus->routing_table[i].state = PLUG;
+			}
+		}
+	}
+}
 #endif

@@ -40,6 +40,7 @@ struct mctp_bus {
 struct mctp_msg_ctx {
 	uint8_t src;
 	uint8_t dest;
+	bool tag_owner;
 	uint8_t tag;
 	uint8_t last_seq;
 	void *buf;
@@ -70,6 +71,9 @@ struct mctp {
 		ROUTE_BRIDGE,
 	} route_policy;
 	size_t max_message_size;
+	/* Control message RX callback. */
+	mctp_rx_fn control_rx;
+	void *control_rx_data;
 };
 
 #ifndef BUILD_ASSERT
@@ -194,7 +198,8 @@ static struct mctp_msg_ctx *mctp_msg_ctx_lookup(struct mctp *mctp, uint8_t src,
 }
 
 static struct mctp_msg_ctx *mctp_msg_ctx_create(struct mctp *mctp, uint8_t src,
-						uint8_t dest, uint8_t tag)
+						uint8_t dest, bool tag_owner,
+						uint8_t tag)
 {
 	struct mctp_msg_ctx *ctx = NULL;
 	unsigned int i;
@@ -212,6 +217,7 @@ static struct mctp_msg_ctx *mctp_msg_ctx_create(struct mctp *mctp, uint8_t src,
 
 	ctx->src = src;
 	ctx->dest = dest;
+	ctx->tag_owner = tag_owner;
 	ctx->tag = tag;
 	ctx->buf_size = 0;
 
@@ -440,8 +446,9 @@ static inline bool mctp_ctrl_cmd_is_transport(struct mctp_ctrl_msg_hdr *hdr)
 		(hdr->command_code <= MCTP_CTRL_CMD_LAST_TRANSPORT));
 }
 
-static bool mctp_ctrl_handle_msg(struct mctp_bus *bus, mctp_eid_t src,
-				 uint8_t msg_tag, bool tag_owner, void *buffer,
+static bool mctp_ctrl_handle_msg(struct mctp *mctp, struct mctp_bus *bus,
+				 mctp_eid_t src, uint8_t msg_tag,
+				 bool tag_owner, void *buffer,
 				 size_t length)
 {
 	struct mctp_ctrl_msg_hdr *msg_hdr = buffer;
@@ -456,9 +463,17 @@ static bool mctp_ctrl_handle_msg(struct mctp_bus *bus, mctp_eid_t src,
 	if (mctp_ctrl_cmd_is_transport(msg_hdr)) {
 		if (bus->binding->control_rx != NULL) {
 			/* MCTP bus binding handler */
-			bus->binding->control_rx(src, msg_tag, tag_owner,
+			bus->binding->control_rx(src, tag_owner, msg_tag,
 						 bus->binding->control_rx_data,
 						 buffer, length);
+			return true;
+		}
+	} else {
+		if (mctp->control_rx != NULL) {
+			/* MCTP endpoint handler */
+			mctp->control_rx(src, tag_owner, msg_tag,
+					 mctp->control_rx_data,
+					 buffer, length);
 			return true;
 		}
 	}
@@ -480,6 +495,89 @@ static inline bool mctp_ctrl_cmd_is_request(struct mctp_ctrl_msg_hdr *hdr)
 {
 	return hdr->ic_msg_type == MCTP_CTRL_HDR_MSG_TYPE &&
 	       hdr->rq_dgram_inst & MCTP_CTRL_HDR_FLAG_REQUEST;
+}
+
+int mctp_set_rx_ctrl(struct mctp *mctp, mctp_rx_fn fn, void *data)
+{
+	mctp->control_rx = fn;
+	mctp->control_rx_data = data;
+	return 0;
+}
+
+static void encode_ctrl_cmd_header(struct mctp_ctrl_msg_hdr *mctp_ctrl_hdr,
+				   uint8_t rq_dgram_inst, uint8_t cmd_code)
+{
+	mctp_ctrl_hdr->ic_msg_type = MCTP_CTRL_HDR_MSG_TYPE;
+	mctp_ctrl_hdr->rq_dgram_inst = rq_dgram_inst;
+	mctp_ctrl_hdr->command_code = cmd_code;
+}
+
+bool mctp_encode_ctrl_cmd_set_eid(struct mctp_ctrl_cmd_set_eid *set_eid_cmd,
+				  uint8_t rq_dgram_inst,
+				  mctp_ctrl_cmd_set_eid_op op, uint8_t eid)
+{
+	if (!set_eid_cmd)
+		return false;
+
+	encode_ctrl_cmd_header(&set_eid_cmd->ctrl_hdr, rq_dgram_inst,
+			       MCTP_CTRL_CMD_SET_ENDPOINT_ID);
+	set_eid_cmd->operation = op;
+	set_eid_cmd->eid = eid;
+	return true;
+}
+
+static inline mctp_eid_t mctp_bus_get_eid(struct mctp_bus *bus)
+{
+	return bus->eid;
+}
+
+static inline void mctp_bus_set_eid(struct mctp_bus *bus, mctp_eid_t eid)
+{
+	bus->eid = eid;
+}
+
+/*
+ * @brief Sets the EID accordingly to the provided policy and creates response.
+ * See DSP0236 1.3.0 12.3
+ */
+int mctp_ctrl_cmd_set_endpoint_id(struct mctp *mctp, mctp_eid_t dest_eid,
+				  struct mctp_ctrl_cmd_set_eid *request,
+				  struct mctp_ctrl_resp_set_eid *response)
+{
+	struct mctp_bus *bus = find_bus_for_eid(mctp, dest_eid);
+
+	if (!request || !response)
+		return -1;
+	if (request->eid == MCTP_EID_BROADCAST ||
+	    request->eid == MCTP_EID_NULL) {
+		response->completion_code = MCTP_CTRL_CC_ERROR_INVALID_DATA;
+		response->eid_set = mctp_bus_get_eid(bus);
+		return 0;
+	}
+
+	switch (request->operation) {
+	case 0: /* Set EID */
+		if (mctp->n_busses == 1 || bus->eid == 0x0) {
+			mctp_bus_set_eid(bus, request->eid);
+			response->eid_set = request->eid;
+			SET_MCTP_EID_ASSIGNMENT_STATUS(response->status,
+						       MCTP_SET_EID_ACCEPTED);
+		} else {
+			response->eid_set = bus->eid;
+			SET_MCTP_EID_ASSIGNMENT_STATUS(response->status,
+						       MCTP_SET_EID_REJECTED);
+		}
+		response->completion_code = MCTP_CTRL_CC_SUCCESS;
+		break;
+	case 1: /* Force EID */
+		mctp_bus_set_eid(bus, request->eid);
+		response->completion_code = MCTP_CTRL_CC_SUCCESS;
+		response->eid_set = request->eid;
+		break;
+	default: /* Reset EID and Set Discovered Flag */
+		response->completion_code = MCTP_CTRL_CC_ERROR_INVALID_DATA;
+	}
+	return 0;
 }
 
 /*
@@ -506,7 +604,9 @@ static void mctp_rx(struct mctp *mctp, struct mctp_bus *bus, mctp_eid_t src,
 			if (mctp_ctrl_cmd_is_request(msg_hdr)) {
 				bool handled;
 				handled = mctp_ctrl_handle_msg(
-					bus, src, msg_tag, tag_owner, buf, len);
+						mctp, bus, src, msg_tag,
+						tag_owner, buf, len);
+
 				if (handled)
 					return;
 			}
@@ -560,6 +660,7 @@ void mctp_bus_rx(struct mctp_binding *binding, struct mctp_pktbuf *pkt)
 	if (mctp->route_policy == ROUTE_ENDPOINT && hdr->dest != bus->eid)
 		goto out;
 
+	tag_owner = (hdr->flags_seq_tag & MCTP_HDR_FLAG_TO) ? true : false;
 	flags = hdr->flags_seq_tag & (MCTP_HDR_FLAG_SOM | MCTP_HDR_FLAG_EOM);
 	tag = (hdr->flags_seq_tag >> MCTP_HDR_TAG_SHIFT) & MCTP_HDR_TAG_MASK;
 	seq = (hdr->flags_seq_tag >> MCTP_HDR_SEQ_SHIFT) & MCTP_HDR_SEQ_MASK;
@@ -584,7 +685,7 @@ void mctp_bus_rx(struct mctp_binding *binding, struct mctp_pktbuf *pkt)
 			mctp_msg_ctx_reset(ctx);
 		} else {
 			ctx = mctp_msg_ctx_create(mctp, hdr->src, hdr->dest,
-						  tag);
+						  tag_owner, tag);
 			/* If context creation fails due to exhaution of contexts we
 			* can support, drop the packet */
 			if (!ctx) {
@@ -802,8 +903,9 @@ static int mctp_message_tx_on_bus(struct mctp_bus *bus, mctp_eid_t src,
 		hdr->ver = bus->binding->version & 0xf;
 		hdr->dest = dest;
 		hdr->src = src;
-		hdr->flags_seq_tag = (tag_owner << MCTP_HDR_TO_SHIFT) |
-				     (msg_tag << MCTP_HDR_TAG_SHIFT);
+		hdr->flags_seq_tag |= (msg_tag & MCTP_HDR_TAG_MASK) << MCTP_HDR_TAG_SHIFT;
+		if (tag_owner)
+			hdr->flags_seq_tag |= MCTP_HDR_FLAG_TO;
 
 		if (i == 0)
 			hdr->flags_seq_tag |= MCTP_HDR_FLAG_SOM;

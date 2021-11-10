@@ -13,6 +13,7 @@
 #include "utils/mctp-capture.h"
 #include "libmctp-smbus.h"
 #include "libmctp-log.h"
+#include "libmctp-cmds.h"
 
 #include <assert.h>
 #include <err.h>
@@ -37,6 +38,9 @@
 
 #define TIMER_TIMEOUT_SEC	30
 
+#define PLDM_MCTP_MSG_TYPE_MASK	0x7F
+#define PLDM_RQ_BIT		(1<<7)
+
 #if HAVE_SYSTEMD_SD_DAEMON_H
 #include <systemd/sd-daemon.h>
 #else
@@ -49,6 +53,25 @@ static inline int sd_listen_fds(int i __unused)
 static const mctp_eid_t local_eid_default = 8;
 static char sockname[] = "\0mctp-mux";
 
+enum {
+	FD_BINDING = 0,
+	FD_SOCKET,
+	FD_SIGNAL,
+	FD_TIMER,
+	FD_NR,
+};
+
+struct mctp_ctrl_req {
+	struct mctp_ctrl_msg_hdr hdr;
+	uint8_t data[MCTP_BTU];
+};
+
+struct mctp_ctrl_resp {
+	struct mctp_ctrl_msg_hdr hdr;
+	uint8_t completion_code;
+	uint8_t data[MCTP_BTU];
+};
+
 struct binding {
 	const char *name;
 	int (*init)(struct mctp *mctp, struct binding *binding, mctp_eid_t eid,
@@ -58,12 +81,19 @@ struct binding {
 	int (*process)(struct binding *binding);
 	void *data;
 	void (*scan_process)(struct binding *binding);
+	void (*get_routing_table) (struct binding *binding,
+				   struct eid_routing_entry **table);
 };
 
 struct client {
 	bool		active;
 	int		sock;
 	uint8_t		type;
+};
+
+struct tag_to {
+	bool		tag_owner;
+	uint8_t		tag;
 };
 
 struct ctx {
@@ -84,13 +114,46 @@ struct ctx {
 		struct capture binding;
 		struct capture socket;
 	} pcap;
+
+	struct mctp_ctrl_resp	*buf_resp_ctrl;
+	struct tag_to	tag_to_req;
 };
 
-static void tx_message(struct ctx *ctx, mctp_eid_t eid, void *msg, size_t len)
+static bool is_pldm_msg(void* msg)
+{
+	uint8_t *p;
+	uint8_t byte;
+
+	p = (uint8_t *)msg;
+	byte = *p;
+	if ((byte & PLDM_MCTP_MSG_TYPE_MASK) == MCTP_PLDM_HDR_MSG_TYPE)
+		return true;
+	else
+		return false;
+
+}
+
+static bool is_pldm_req(void* msg)
+{
+	uint8_t *p;
+	uint8_t byte;
+
+	p = (uint8_t *)msg;
+	byte = *(p+1);
+	if (byte & PLDM_RQ_BIT)
+		return true;
+	else
+		return false;
+
+}
+
+static void tx_message(struct ctx *ctx, mctp_eid_t eid,
+		       bool tag_owner, uint8_t tag, void *msg, size_t len)
 {
 	int rc;
 
-	rc = mctp_message_tx(ctx->mctp, eid, MCTP_MESSAGE_TO_SRC, 0, msg, len);
+	rc = mctp_message_tx(ctx->mctp, eid, tag_owner, tag, msg, len);
+
 	if (rc)
 		warnx("Failed to send message: %d", rc);
 }
@@ -113,8 +176,22 @@ static void client_remove_inactive(struct ctx *ctx)
 	}
 }
 
+static void handle_resp_ctrl_msg(void *data, void *msg)
+{
+	struct ctx *ctx = data;
+	struct mctp_ctrl_resp *resp = (struct mctp_ctrl_resp *)msg;
+
+	mctp_prdebug("handle_ctrl_msg: Received response\n");
+	/* Current don't need to check Msg Tag on response message */
+	if (resp->hdr.rq_dgram_inst & MCTP_CTRL_HDR_FLAG_REQUEST) {
+		mctp_prerr("Not response\n");
+		return;
+	}
+	ctx->buf_resp_ctrl = resp;
+}
+
 static void
-rx_message(uint8_t eid, bool tag_owner __unused, uint8_t msg_tag __unused,
+rx_message(uint8_t eid, bool tag_owner, uint8_t msg_tag,
 	   void *data, void *msg, size_t len)
 {
 	struct ctx *ctx = data;
@@ -133,33 +210,168 @@ rx_message(uint8_t eid, bool tag_owner __unused, uint8_t msg_tag __unused,
 		fprintf(stderr, "MCTP message received: len %zd, type %d\n",
 				len, type);
 
-	memset(&msghdr, 0, sizeof(msghdr));
-	msghdr.msg_iov = iov;
-	msghdr.msg_iovlen = 2;
-	iov[0].iov_base = &eid;
-	iov[0].iov_len = 1;
-	iov[1].iov_base = msg;
-	iov[1].iov_len = len;
+	if (type == MCTP_CTRL_HDR_MSG_TYPE) {
+		handle_resp_ctrl_msg(data, msg);
+	} else if (type == MCTP_PLDM_HDR_MSG_TYPE) {
+		memset(&msghdr, 0, sizeof(msghdr));
+		msghdr.msg_iov = iov;
+		msghdr.msg_iovlen = 2;
+		iov[0].iov_base = &eid;
+		iov[0].iov_len = 1;
+		iov[1].iov_base = msg;
+		iov[1].iov_len = len;
 
-	for (i = 0; i < ctx->n_clients; i++) {
-		struct client *client = &ctx->clients[i];
-
-		if (client->type != type)
-			continue;
-
-		if (ctx->verbose)
-			fprintf(stderr, "  forwarding to client %d\n", i);
-
-		rc = sendmsg(client->sock, &msghdr, 0);
-		if (rc != (ssize_t)(len + 1)) {
-			client->active = false;
-			removed = true;
+		if (is_pldm_req(msg)) {
+			ctx->tag_to_req.tag_owner = tag_owner;
+			ctx->tag_to_req.tag = msg_tag;
 		}
+
+		for (i = 0; i < ctx->n_clients; i++) {
+			struct client *client = &ctx->clients[i];
+
+			if (client->type != type)
+				continue;
+
+			if (ctx->verbose)
+				fprintf(stderr, "  forwarding to client %d\n", i);
+
+			rc = sendmsg(client->sock, &msghdr, 0);
+			if (rc != (ssize_t)(len + 1)) {
+				client->active = false;
+				removed = true;
+			}
+		}
+	} else {
+		fprintf(stderr, "Unsupport MCTP message type %d\n", type);
 	}
 
 	if (removed)
 		client_remove_inactive(ctx);
 
+}
+
+static int handle_control_set_endpoint_id(struct ctx *ctx,
+				struct mctp_ctrl_req *req,
+				struct mctp_ctrl_resp *resp)
+{
+	struct mctp_ctrl_resp_set_eid *set_eid_resp;
+	struct mctp_ctrl_cmd_set_eid *set_eid_req;
+	int len, rc;
+
+	mctp_prdebug("Set endpoint ID\n");
+
+	set_eid_req = (struct mctp_ctrl_cmd_set_eid *)req;
+	set_eid_resp = (struct mctp_ctrl_resp_set_eid *)resp;
+
+	rc = mctp_ctrl_cmd_set_endpoint_id(ctx->mctp, ctx->local_eid,
+					   set_eid_req, set_eid_resp);
+	len = (rc < 0) ? 0 : sizeof(struct mctp_ctrl_resp_set_eid);
+
+	return len;
+}
+
+static int send_recv_mctp_ctrl_msg(struct ctx *ctx, mctp_eid_t dest,
+				   void *req, size_t len)
+{
+	int rc = 0;
+	int i = 0;
+
+	mctp_prdebug("send_recv_mctp_ctrl_msg\n");
+	rc = mctp_message_tx(ctx->mctp, dest, MCTP_MESSAGE_TO_SRC, 0, req, len);
+	if (rc) {
+		mctp_prerr("Failed to send message: %d", rc);
+		return rc;
+	}
+	/* Read response MCTP control message */
+	while (1) {
+		rc = poll(&ctx->pollfds[FD_BINDING], 1, -1);
+		if (rc < 0) {
+			mctp_prdebug("poll failed\n");
+			break;
+		}
+		if (ctx->pollfds[FD_BINDING].revents & POLLIN) {
+			if (ctx->binding->process) {
+				rc = ctx->binding->process(ctx->binding);
+				if (!rc) {
+					mctp_prdebug("send_recv_mctp_ctrl_msg OK\n");
+					break;
+				}
+			} else {
+				rc = -1;
+				mctp_prerr("No binding process handler\n");
+				break;
+			}
+		}
+		i++;
+
+	}
+
+	return rc;
+}
+
+static int send_set_endpoint_id(struct ctx *ctx, mctp_eid_t new_eid,
+			 mctp_eid_t dest)
+{
+	struct mctp_ctrl_cmd_set_eid set_eid_req;
+	struct mctp_ctrl_resp_set_eid *set_eid_resp;
+
+	int req_len =  sizeof(struct mctp_ctrl_cmd_set_eid);
+	int rc;
+
+	mctp_prdebug("send_set_endpoint_id\n");
+	mctp_encode_ctrl_cmd_set_eid(&set_eid_req, MCTP_CTRL_HDR_FLAG_REQUEST,
+			set_eid, new_eid);
+
+	rc = send_recv_mctp_ctrl_msg(ctx, dest, &set_eid_req, req_len);
+	if (rc < 0) {
+		mctp_prerr("Send MCTP control response %d to %d failed %d\n",
+			set_eid_req.ctrl_hdr.command_code, dest);
+		return rc;
+	}
+
+	set_eid_resp = (struct mctp_ctrl_resp_set_eid *) ctx->buf_resp_ctrl;
+	mctp_prdebug("cc=%x, status=%x, eid_set=%x, eid_pool_size=%x\n",
+		     set_eid_resp->completion_code, set_eid_resp->status,
+		     set_eid_resp->eid_set, set_eid_resp->eid_pool_size);
+
+	return rc;
+}
+
+static void rx_control_message(uint8_t eid, bool tag_owner, uint8_t msg_tag,
+			       void *data, void *msg, size_t len)
+{
+	struct mctp_ctrl_req *req = (struct mctp_ctrl_req *)msg;
+	struct mctp_ctrl_msg_hdr *hdr = msg;
+	int resp_len = 0;
+	struct mctp_ctrl_resp	resp;
+	struct ctx *ctx = data;
+	int rc;
+
+	memcpy(&resp.hdr, &req->hdr, sizeof(struct mctp_ctrl_msg_hdr));
+
+	resp.hdr.rq_dgram_inst &= ~(MCTP_CTRL_HDR_FLAG_REQUEST);
+
+	switch (hdr->command_code) {
+	case MCTP_CTRL_CMD_SET_ENDPOINT_ID:
+		resp_len = handle_control_set_endpoint_id(ctx, req, &resp);
+		break;
+	default:
+		mctp_prerr("Not handle MCTP Control message %d\n", hdr->command_code);
+		break;
+	}
+	if (!resp_len) {
+		mctp_prerr("Response len zero\n");
+		return;
+	}
+
+	if (tag_owner)
+		tag_owner = false;	//clear tag owner in response message
+
+	rc = mctp_message_tx(ctx->mctp, eid, tag_owner, msg_tag, &resp, resp_len);
+	if (rc < 0) {
+		mctp_prerr("Send MCTP control response %d to %d failed\n",
+			hdr->command_code, eid);
+	}
 }
 
 static int binding_null_init(struct mctp *mctp __unused,
@@ -315,6 +527,13 @@ static void binding_smbus_scan_process(struct binding *binding)
 	return mctp_smbus_scan_process(binding->data);
 }
 
+static void binding_smbus_get_routing_table(struct binding *binding,
+					    struct eid_routing_entry **table)
+{
+	mctp_prdebug("binding_smbus_get_routing_table\n");
+	return mctp_smbus_get_routing_table(binding->data, table);
+}
+
 struct binding bindings[] = {
 	{
 		.name = "null",
@@ -340,6 +559,7 @@ struct binding bindings[] = {
 		.init_pollfd = binding_smbus_init_pollfd,
 		.process = binding_smbus_process,
 		.scan_process = binding_smbus_scan_process,
+		.get_routing_table = binding_smbus_get_routing_table,
 	}
 };
 
@@ -419,6 +639,8 @@ static int client_process_recv(struct ctx *ctx, int idx)
 	struct client *client = &ctx->clients[idx];
 	uint8_t eid;
 	ssize_t len;
+	bool tag_owner;
+	uint8_t tag;
 	int rc;
 
 	/* are we waiting for a type message? */
@@ -484,12 +706,19 @@ static int client_process_recv(struct ctx *ctx, int idx)
 			"client[%d] sent message: dest 0x%02x len %d\n",
 			idx, eid, rc - 1);
 
-
+	if (is_pldm_req(ctx->buf + 1)) {
+		/* PLDM Requester */
+		tag_owner = true;
+		tag = 0;
+	} else {
+		/* PLDM Responder */
+		tag_owner = false;	// Clear tag owner on response message
+		tag = ctx->tag_to_req.tag;
+	}
 	if (eid == ctx->local_eid)
-		rx_message(eid, MCTP_MESSAGE_TO_DST, 0, ctx, ctx->buf + 1,
-			   rc - 1);
+		rx_message(eid, tag_owner, tag, ctx, ctx->buf + 1, rc - 1);
 	else
-		tx_message(ctx, eid, ctx->buf + 1, rc - 1);
+		tx_message(ctx, eid, tag_owner, tag, ctx->buf + 1, rc - 1);
 
 	return 0;
 
@@ -520,20 +749,13 @@ static void binding_destroy(struct ctx *ctx)
 		ctx->binding->destroy(ctx->mctp, ctx->binding);
 }
 
-enum {
-	FD_BINDING = 0,
-	FD_SOCKET,
-	FD_SIGNAL,
-	FD_TIMER,
-	FD_NR,
-};
-
 static int run_daemon(struct ctx *ctx)
 {
 	bool clients_changed = false;
 	sigset_t mask;
 	int rc, i;
 	struct itimerspec ts;
+	struct eid_routing_entry *table;
 
 	ctx->pollfds = malloc(FD_NR * sizeof(struct pollfd));
 
@@ -574,6 +796,7 @@ static int run_daemon(struct ctx *ctx)
 	}
 
 	mctp_set_rx_all(ctx->mctp, rx_message, ctx);
+	mctp_set_rx_ctrl(ctx->mctp, rx_control_message, ctx);
 
 	for (;;) {
 		if (clients_changed) {
@@ -626,7 +849,7 @@ static int run_daemon(struct ctx *ctx)
 			rc = 0;
 			if (ctx->binding->process)
 				rc = ctx->binding->process(ctx->binding);
-			if (rc)
+			if (rc < 0)
 				break;
 		}
 
@@ -649,6 +872,18 @@ static int run_daemon(struct ctx *ctx)
 		if (ctx->pollfds[FD_TIMER].revents) {
 			if (ctx->binding->scan_process)
 				ctx->binding->scan_process(ctx->binding);
+			if(ctx->binding->get_routing_table) {
+				ctx->binding->get_routing_table(ctx->binding, &table);
+				for(i = 0; i< EID_ROUTING_TABLE_SIZE; i++) {
+					if (table[i].addr && (table[i].state == NEW)) {
+						rc = send_set_endpoint_id(ctx, table[i].eid, table[i].eid);
+						if (rc) {
+							table[i].state = UNUSED;
+						}
+					}
+				}
+			}
+
 			rc = timerfd_settime(ctx->pollfds[FD_TIMER].fd,
 					0,
 					&ts,

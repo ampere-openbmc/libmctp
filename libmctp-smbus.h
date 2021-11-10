@@ -28,6 +28,9 @@ int mctp_smbus_get_out_fd(struct mctp_binding_smbus *smbus);
 int mctp_smbus_get_in_fd(struct mctp_binding_smbus *smbus);
 void mctp_smbus_set_in_fd(struct mctp_binding_smbus *smbus, int fd);
 void mctp_smbus_set_out_fd(struct mctp_binding_smbus *smbus, int fd);
+void mctp_smbus_scan_process(struct mctp_binding_smbus *smbus);
+void mctp_smbus_get_routing_table(struct mctp_binding_smbus *smbus,
+				  struct eid_routing_entry **table);
 
 #endif
 

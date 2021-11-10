@@ -17,10 +17,32 @@ struct mctp_ctrl_msg_hdr {
 	uint8_t ic_msg_type;
 	uint8_t rq_dgram_inst;
 	uint8_t command_code;
+} __attribute__((__packed__));
+
+typedef enum {
+	set_eid,
+	force_eid,
+	reset_eid,
+	set_discovered_flag
+} mctp_ctrl_cmd_set_eid_op;
+
+struct mctp_ctrl_cmd_set_eid {
+	struct mctp_ctrl_msg_hdr ctrl_hdr;
+	mctp_ctrl_cmd_set_eid_op operation : 2;
+	uint8_t : 6;
+	uint8_t eid;
+} __attribute__((__packed__));
+
+struct mctp_ctrl_resp_set_eid {
+	struct mctp_ctrl_msg_hdr ctrl_hdr;
 	uint8_t completion_code;
-};
+	uint8_t status;
+	mctp_eid_t eid_set;
+	uint8_t eid_pool_size;
+} __attribute__((__packed__));
 
 #define MCTP_CTRL_HDR_MSG_TYPE	       0
+#define MCTP_PLDM_HDR_MSG_TYPE         1
 #define MCTP_CTRL_HDR_FLAG_REQUEST     (1 << 7)
 #define MCTP_CTRL_HDR_FLAG_DGRAM       (1 << 6)
 #define MCTP_CTRL_HDR_INSTANCE_ID_MASK 0x1F
@@ -66,6 +88,28 @@ struct mctp_ctrl_msg_hdr {
 #define MCTP_CTRL_CC_ERROR_NOT_READY	   0x04
 #define MCTP_CTRL_CC_ERROR_UNSUPPORTED_CMD 0x05
 /* 0x80 - 0xFF are command specific */
+
+/* MCTP Set Endpoint ID response fields
+ * See DSP0236 v1.3.0 Table 14.
+ */
+
+#define MCTP_EID_ASSIGNMENT_STATUS_SHIFT 0x4
+#define MCTP_EID_ASSIGNMENT_STATUS_MASK 0x3
+#define SET_MCTP_EID_ASSIGNMENT_STATUS(field, status)                          \
+	((field) |= (((status)&MCTP_EID_ASSIGNMENT_STATUS_MASK)                \
+		     << MCTP_EID_ASSIGNMENT_STATUS_SHIFT))
+#define MCTP_SET_EID_ACCEPTED 0x0
+#define MCTP_SET_EID_REJECTED 0x1
+
+int mctp_set_rx_ctrl(struct mctp *mctp, mctp_rx_fn fn, void *data);
+
+bool mctp_encode_ctrl_cmd_set_eid(struct mctp_ctrl_cmd_set_eid *set_eid_cmd,
+				  uint8_t rq_dgram_inst,
+				  mctp_ctrl_cmd_set_eid_op op, uint8_t eid);
+
+int mctp_ctrl_cmd_set_endpoint_id(struct mctp *mctp, mctp_eid_t dest_eid,
+				  struct mctp_ctrl_cmd_set_eid *request,
+				  struct mctp_ctrl_resp_set_eid *response);
 
 #ifdef __cplusplus
 }

@@ -132,7 +132,7 @@ static int mctp_smbus_rx(struct mctp_binding_smbus *smbus, uint8_t *buf, uint32_
 		 * a properly written poll loop, although it's not clear
 		 * why. Return so that the upper layer can retry.
 		 */
-		return 0;
+		return 1;
 	}
 	mctp_prdebug("%s received %d bytes\n", __func__, len);
 
@@ -432,15 +432,23 @@ void mctp_smbus_scan_process(struct mctp_binding_smbus *smbus)
 			mctp_prdebug("Ret %d \n", ret);
 			if (ret < 0) {
 				/* Device not present */
-				smbus->routing_table[i].state = UNPLUG;
+				smbus->routing_table[i].state = UNUSED;
 			} else {
 				/* Device present */
-				if (smbus->routing_table[i].state == UNPLUG) {
+				if (smbus->routing_table[i].state == UNUSED) {
 					/* Call SetEID command*/
+					smbus->routing_table[i].state = NEW;
+				} else if (smbus->routing_table[i].state == NEW) {
+					smbus->routing_table[i].state = ASSIGNED;
 				}
-				smbus->routing_table[i].state = PLUG;
 			}
 		}
 	}
+}
+
+void mctp_smbus_get_routing_table(struct mctp_binding_smbus *smbus,
+				  struct eid_routing_entry **table)
+{
+	*table = &smbus->routing_table[0];
 }
 #endif

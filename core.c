@@ -526,6 +526,20 @@ bool mctp_encode_ctrl_cmd_set_eid(struct mctp_ctrl_cmd_set_eid *set_eid_cmd,
 	return true;
 }
 
+bool mctp_encode_ctrl_cmd_get_routing_table(
+	struct mctp_ctrl_cmd_get_routing_table *get_routing_table_cmd,
+	uint8_t rq_dgram_inst, uint8_t entry_handle)
+{
+	if (!get_routing_table_cmd)
+		return false;
+
+	encode_ctrl_cmd_header(&get_routing_table_cmd->ctrl_hdr,
+			       rq_dgram_inst,
+			       MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES);
+	get_routing_table_cmd->entry_handle = entry_handle;
+	return true;
+}
+
 static inline mctp_eid_t mctp_bus_get_eid(struct mctp_bus *bus)
 {
 	return bus->eid;
@@ -580,6 +594,48 @@ int mctp_ctrl_cmd_set_endpoint_id(struct mctp *mctp, mctp_eid_t dest_eid,
 	return 0;
 }
 
+int mctp_ctrl_cmd_get_routing_table(struct mctp *mctp, mctp_eid_t dest_eid,
+				    struct mctp_ctrl_cmd_get_routing_table *request,
+				    struct mctp_ctrl_resp_get_routing_table *response)
+{
+	struct eid_routing_entry *table;
+	struct get_routing_table_entry *entry;
+	struct mctp_bus *bus = find_bus_for_eid(mctp, dest_eid);
+	int i, entry_offset;
+
+	if (!request || !response)
+		return -1;
+	if (bus->binding->get_routing_table) {
+		bus->binding->get_routing_table(bus->binding, &table);
+	}
+	if (!table)
+		return -1;
+
+	entry_offset = 0;
+	for(i = request->entry_handle; i< EID_ROUTING_TABLE_SIZE; i++) {
+		if ((table[i].addr != 0) && (table[i].eid != 0)) {
+			entry_offset += sizeof(struct mctp_ctrl_resp_get_routing_table);
+			entry = (struct get_routing_table_entry *) (response + entry_offset);
+
+			response->number_of_entries++;
+		}
+	}
+	response->completion_code = MCTP_CTRL_CC_SUCCESS;
+	response->next_entry_handle = 0xFF;
+
+}
+
+void mctp_get_routing_table(struct mctp *mctp, mctp_eid_t dest_eid,
+			    struct eid_routing_entry **table)
+{
+	struct mctp_bus *bus = find_bus_for_eid(mctp, dest_eid);
+
+	mctp_prdebug("bus->eid= %d \n", bus->eid);
+	if (bus->binding->get_routing_table) {
+		mctp_prdebug("get_routing_table \n");
+		bus->binding->get_routing_table(bus->binding, table);
+	}
+}
 /*
  * Receive the complete MCTP message and route it.
  * Asserts:

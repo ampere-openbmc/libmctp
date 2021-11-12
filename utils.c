@@ -6,6 +6,7 @@
 
 #include "libmctp.h"
 #include "libmctp-log.h"
+#include "libmctp-cmds.h"
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -64,8 +65,19 @@ int parseEIDConfig(struct eid_routing_entry *p)
 		{
 			ret = sscanf(tmp_buf, "%s %s\n", t, q);
 			if (ret == 2) {
-				p[i].addr = strtoul(t, NULL, 16);;
-				p[i].eid = strtoul(q, NULL, 10);
+				/* TODO: Config file should has all information
+				 * EID range, phy range, transport type,..
+				 * as Table 27 in DSP0236 */
+				p[i].addr[0] = strtoul(t, NULL, 16);;
+				p[i].eid[0] = strtoul(q, NULL, 10);
+				p[i].eid_range_size = 1;
+				p[i].phys_address_size = 1;
+				SET_ENDPOINT_TYPE(p[i].entry_type, MCTP_SIMPLE_ENDPOINT);
+				SET_ENDPOINT_ID_TYPE(p[i].entry_type, MCTP_STATIC_EID);
+				SET_ROUTING_ENTRY_PORT(p[i].entry_type, 0);
+				p[i].phys_transport_binding_id = MCTP_BINDING_SMBUS;
+				p[i].phys_media_type_id = MCTP_SMBUS30_I2C1MHZ_COMPATIBLE;
+				p[i].starting_eid = p[i].eid[0];
 			}
 			i++;
 		}

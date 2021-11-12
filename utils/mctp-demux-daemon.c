@@ -81,8 +81,6 @@ struct binding {
 	int (*process)(struct binding *binding);
 	void *data;
 	void (*scan_process)(struct binding *binding);
-	void (*get_routing_table) (struct binding *binding,
-				   struct eid_routing_entry **table);
 };
 
 struct client {
@@ -251,8 +249,8 @@ rx_message(uint8_t eid, bool tag_owner, uint8_t msg_tag,
 }
 
 static int handle_control_set_endpoint_id(struct ctx *ctx,
-				struct mctp_ctrl_req *req,
-				struct mctp_ctrl_resp *resp)
+					  struct mctp_ctrl_req *req,
+					  struct mctp_ctrl_resp *resp)
 {
 	struct mctp_ctrl_resp_set_eid *set_eid_resp;
 	struct mctp_ctrl_cmd_set_eid *set_eid_req;
@@ -266,6 +264,31 @@ static int handle_control_set_endpoint_id(struct ctx *ctx,
 	rc = mctp_ctrl_cmd_set_endpoint_id(ctx->mctp, ctx->local_eid,
 					   set_eid_req, set_eid_resp);
 	len = (rc < 0) ? 0 : sizeof(struct mctp_ctrl_resp_set_eid);
+
+	return len;
+}
+
+static int handle_control_get_routing_table(struct ctx *ctx,
+					    struct mctp_ctrl_req *req,
+					    struct mctp_ctrl_resp *resp)
+{
+	struct mctp_ctrl_resp_get_routing_table *get_rt_resp;
+	struct mctp_ctrl_cmd_get_routing_table *get_rt_req;
+	int len, rc;
+
+	mctp_prdebug("Get Routing Table Entry\n");
+
+	get_rt_req = (struct mctp_ctrl_cmd_get_routing_table *)req;
+	get_rt_resp = (struct mctp_ctrl_resp_get_routing_table *)resp;
+
+	rc = mctp_ctrl_cmd_get_routing_table(ctx->mctp, ctx->local_eid,
+					     get_rt_req, get_rt_resp);
+	if (rc < 0)
+		len = 0;
+	else {
+		len = sizeof(struct mctp_ctrl_resp_get_routing_table);
+		len += get_rt_resp->number_of_entries * sizeof(struct get_routing_table_entry);
+	}
 
 	return len;
 }
@@ -310,7 +333,7 @@ static int send_recv_mctp_ctrl_msg(struct ctx *ctx, mctp_eid_t dest,
 }
 
 static int send_set_endpoint_id(struct ctx *ctx, mctp_eid_t new_eid,
-			 mctp_eid_t dest)
+				mctp_eid_t dest)
 {
 	struct mctp_ctrl_cmd_set_eid set_eid_req;
 	struct mctp_ctrl_resp_set_eid *set_eid_resp;
@@ -324,7 +347,7 @@ static int send_set_endpoint_id(struct ctx *ctx, mctp_eid_t new_eid,
 
 	rc = send_recv_mctp_ctrl_msg(ctx, dest, &set_eid_req, req_len);
 	if (rc < 0) {
-		mctp_prerr("Send MCTP control response %d to %d failed %d\n",
+		mctp_prerr("Send MCTP control response %d to %d failed\n",
 			set_eid_req.ctrl_hdr.command_code, dest);
 		return rc;
 	}
@@ -335,6 +358,44 @@ static int send_set_endpoint_id(struct ctx *ctx, mctp_eid_t new_eid,
 		     set_eid_resp->eid_set, set_eid_resp->eid_pool_size);
 
 	return rc;
+}
+
+static int send_get_routing_table(struct ctx *ctx, mctp_eid_t dest)
+{
+	struct mctp_ctrl_cmd_get_routing_table req;
+	struct mctp_ctrl_resp_get_routing_table *resp;
+	struct eid_routing_entry *entry;
+
+	int req_len =  sizeof(struct mctp_ctrl_cmd_set_eid);
+	int rc, offset, i;
+	mctp_prdebug("send_get_routing_table\n");
+	mctp_encode_ctrl_cmd_get_routing_table(&req,
+				MCTP_CTRL_HDR_FLAG_REQUEST, 0);
+
+	rc = send_recv_mctp_ctrl_msg(ctx, dest, &req, req_len);
+	if (rc < 0) {
+		mctp_prerr("Send MCTP control response %d to %d failed\n",
+			req.ctrl_hdr.command_code, dest);
+		return rc;
+	}
+
+	resp = (struct mctp_ctrl_resp_get_routing_table *) ctx->buf_resp_ctrl;
+	mctp_prdebug("cc=%x, number_of_entries=%x\n",
+			resp->completion_code, resp->number_of_entries);
+
+	offset = sizeof(struct mctp_ctrl_resp_get_routing_table);
+	for (i = 0; i < resp->number_of_entries; i++) {
+		entry = (struct eid_routing_entry *)(resp + offset);
+		mctp_prdebug("size_eid=%x, start_eid=%x\n, entry_type=%x, \
+			     transport_type=%x, media_id=%x, addr_size=%x, phy_addr=%x",
+			     entry->eid_range_size, entry->starting_eid, entry->entry_type,
+			     entry->phys_transport_binding_id, entry->phys_media_type_id,
+			     entry->phys_address_size, entry->addr[0]);
+		offset += sizeof(struct eid_routing_entry);
+	}
+
+	return rc;
+
 }
 
 static void rx_control_message(uint8_t eid, bool tag_owner, uint8_t msg_tag,
@@ -354,6 +415,9 @@ static void rx_control_message(uint8_t eid, bool tag_owner, uint8_t msg_tag,
 	switch (hdr->command_code) {
 	case MCTP_CTRL_CMD_SET_ENDPOINT_ID:
 		resp_len = handle_control_set_endpoint_id(ctx, req, &resp);
+		break;
+	case MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES:
+		resp_len = handle_control_get_routing_table(ctx, req, &resp);
 		break;
 	default:
 		mctp_prerr("Not handle MCTP Control message %d\n", hdr->command_code);
@@ -527,13 +591,6 @@ static void binding_smbus_scan_process(struct binding *binding)
 	return mctp_smbus_scan_process(binding->data);
 }
 
-static void binding_smbus_get_routing_table(struct binding *binding,
-					    struct eid_routing_entry **table)
-{
-	mctp_prdebug("binding_smbus_get_routing_table\n");
-	return mctp_smbus_get_routing_table(binding->data, table);
-}
-
 struct binding bindings[] = {
 	{
 		.name = "null",
@@ -559,7 +616,6 @@ struct binding bindings[] = {
 		.init_pollfd = binding_smbus_init_pollfd,
 		.process = binding_smbus_process,
 		.scan_process = binding_smbus_scan_process,
-		.get_routing_table = binding_smbus_get_routing_table,
 	}
 };
 
@@ -872,18 +928,17 @@ static int run_daemon(struct ctx *ctx)
 		if (ctx->pollfds[FD_TIMER].revents) {
 			if (ctx->binding->scan_process)
 				ctx->binding->scan_process(ctx->binding);
-			if(ctx->binding->get_routing_table) {
-				ctx->binding->get_routing_table(ctx->binding, &table);
-				for(i = 0; i< EID_ROUTING_TABLE_SIZE; i++) {
-					if (table[i].addr && (table[i].state == NEW)) {
-						rc = send_set_endpoint_id(ctx, table[i].eid, table[i].eid);
-						if (rc) {
-							table[i].state = UNUSED;
-						}
+			mctp_get_routing_table(ctx->mctp, ctx->local_eid, &table);
+			if (table != NULL) {
+			for(i = 0; i< EID_ROUTING_TABLE_SIZE; i++) {
+				if (table[i].addr[0] && (table[i].state == NEW)) {
+					rc = send_set_endpoint_id(ctx, table[i].eid[0], table[i].eid[0]);
+					if (rc) {
+						table[i].state = UNUSED;
 					}
 				}
 			}
-
+			}
 			rc = timerfd_settime(ctx->pollfds[FD_TIMER].fd,
 					0,
 					&ts,

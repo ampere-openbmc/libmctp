@@ -56,6 +56,7 @@ struct mctp_pktbuf {
 
 /* Routing Table */
 #define EID_ROUTING_TABLE_SIZE	16
+#define EID_RANGE_MAX_SIZE	16
 
 enum eid_state {
 	UNUSED = 0,
@@ -64,8 +65,14 @@ enum eid_state {
 };
 
 struct eid_routing_entry {
-	uint8_t eid;
-	uint8_t addr;
+	uint8_t eid[EID_RANGE_MAX_SIZE];
+	uint8_t addr[EID_RANGE_MAX_SIZE];
+	uint8_t eid_range_size;
+	uint8_t starting_eid;
+	uint8_t entry_type;
+	uint8_t phys_transport_binding_id;
+	uint8_t phys_media_type_id;
+	uint8_t phys_address_size;
 	enum eid_state state;
 };
 
@@ -140,6 +147,8 @@ struct mctp_binding {
 	size_t pkt_trailer;
 	int (*start)(struct mctp_binding *binding);
 	int (*tx)(struct mctp_binding *binding, struct mctp_pktbuf *pkt);
+	void (*get_routing_table)(struct mctp_binding *binding,
+				  struct eid_routing_entry **table);
 	mctp_rx_fn control_rx;
 	void *control_rx_data;
 };

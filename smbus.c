@@ -92,15 +92,21 @@ static uint8_t cal_pec(uint8_t *data, uint8_t len)
 static void add_routing_table(struct mctp_binding_smbus *smbus, uint8_t eid, uint8_t addr)
 {
 	int i;
+	struct eid_routing_entry *entry;
 
 	mctp_prdebug("Add Routing Table: addr=%x, eid=%d\n", addr, eid);
 	for(i = 0; i< EID_ROUTING_TABLE_SIZE; i++) {
-		if (smbus->routing_table[i].eid == 0) {
-			smbus->routing_table[i].eid = eid;
-			smbus->routing_table[i].addr = addr;
+		entry = &smbus->routing_table[i];
+		/* TODO: Only support one EID and one phy address
+		 * For EID range and phy address range, consider change here. */
+		entry->eid_range_size = 1;
+		entry->phys_address_size = 1;
+		if (entry->eid[0] == 0) {
+			entry->eid[0] = eid;
+			entry->addr[0] = addr;
 			return;
-		} else if (smbus->routing_table[i].eid == eid) {
-			smbus->routing_table[i].addr = addr;
+		} else if (entry->eid[0] == eid) {
+			entry->addr[0] = addr;
 			return;
 		}
 	}
@@ -110,10 +116,14 @@ static void add_routing_table(struct mctp_binding_smbus *smbus, uint8_t eid, uin
 static uint8_t find_addr_in_table(struct mctp_binding_smbus *smbus, uint8_t eid)
 {
 	int i;
+	struct eid_routing_entry *entry;
 
 	for(i = 0; i< EID_ROUTING_TABLE_SIZE; i++) {
-		if (smbus->routing_table[i].eid == eid)
-			return smbus->routing_table[i].addr;
+		entry = &smbus->routing_table[i];
+		/* TODO: Only support one EID and one phy address
+		 * For EID range and phy address range, consider change here. */
+		if (entry->eid[0] == eid)
+			return entry->addr[0];
 	}
 	mctp_prerr("EID does not exist in routing table\n");
 	return 0xFF;
@@ -233,6 +243,15 @@ static void mctp_smbus_set_tx_fn(struct mctp_binding_smbus* smbus, mctp_smbus_tx
 	smbus->tx_fn_data = data;
 }
 
+static void mctp_smbus_get_routing_table(struct mctp_binding *binding,
+					 struct eid_routing_entry **table)
+{
+	mctp_prdebug("%s \n", __func__);
+	struct mctp_binding_smbus *smbus = binding_to_smbus(binding);
+
+	*table = &smbus->routing_table[0];
+}
+
 struct mctp_binding_smbus *mctp_smbus_init(uint8_t addr)
 {
 	struct mctp_binding_smbus *smbus;
@@ -253,6 +272,7 @@ struct mctp_binding_smbus *mctp_smbus_init(uint8_t addr)
 
 	smbus->binding.tx = mctp_binding_smbus_tx;
 	smbus->binding.start = mctp_binding_smbus_start;
+	smbus->binding.get_routing_table = mctp_smbus_get_routing_table;
 #if 0
 	mctp_set_log_stdio(MCTP_LOG_DEBUG);
 #endif
@@ -420,11 +440,13 @@ void mctp_smbus_scan_process(struct mctp_binding_smbus *smbus)
 	struct i2c_rdwr_ioctl_data data = {&msg, 1};
 	int i, ret;
 	uint8_t tbuf = 0;
+	struct eid_routing_entry *entry;
 
 	for(i = 0; i< EID_ROUTING_TABLE_SIZE; i++) {
-		if (smbus->routing_table[i].addr) {
-			mctp_prdebug("Scan %x \n", smbus->routing_table[i].addr);
-			msg.addr = smbus->routing_table[i].addr;
+		entry = &smbus->routing_table[i];
+		if (entry->addr[0]) {
+			mctp_prdebug("Scan %x \n", entry->addr[0]);
+			msg.addr = entry->addr[0];
 			msg.flags = 0;
 			msg.len = 1;
 			msg.buf = &tbuf;
@@ -432,23 +454,17 @@ void mctp_smbus_scan_process(struct mctp_binding_smbus *smbus)
 			mctp_prdebug("Ret %d \n", ret);
 			if (ret < 0) {
 				/* Device not present */
-				smbus->routing_table[i].state = UNUSED;
+				entry->state = UNUSED;
 			} else {
 				/* Device present */
-				if (smbus->routing_table[i].state == UNUSED) {
+				if (entry->state == UNUSED) {
 					/* Call SetEID command*/
-					smbus->routing_table[i].state = NEW;
-				} else if (smbus->routing_table[i].state == NEW) {
-					smbus->routing_table[i].state = ASSIGNED;
+					entry->state = NEW;
+				} else if (entry->state == NEW) {
+					entry->state = ASSIGNED;
 				}
 			}
 		}
 	}
-}
-
-void mctp_smbus_get_routing_table(struct mctp_binding_smbus *smbus,
-				  struct eid_routing_entry **table)
-{
-	*table = &smbus->routing_table[0];
 }
 #endif

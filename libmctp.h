@@ -143,6 +143,7 @@ struct mctp_binding {
 				  struct eid_routing_entry **table);
 	mctp_rx_fn control_rx;
 	void *control_rx_data;
+	uint8_t info;
 };
 
 void mctp_binding_set_tx_enabled(struct mctp_binding *binding, bool enable);

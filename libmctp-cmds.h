@@ -41,6 +41,18 @@ struct mctp_ctrl_resp_set_eid {
 	uint8_t eid_pool_size;
 } __attribute__((__packed__));
 
+struct mctp_ctrl_cmd_get_eid {
+	struct mctp_ctrl_msg_hdr ctrl_hdr;
+} __attribute__((__packed__));
+
+struct mctp_ctrl_resp_get_eid {
+	struct mctp_ctrl_msg_hdr ctrl_hdr;
+	uint8_t completion_code;
+	mctp_eid_t eid;
+	uint8_t eid_type;
+	uint8_t medium_data;
+} __attribute__((__packed__));
+
 struct mctp_ctrl_cmd_get_routing_table {
 	struct mctp_ctrl_msg_hdr ctrl_hdr;
 	uint8_t entry_handle;
@@ -199,6 +211,10 @@ int mctp_set_rx_ctrl(struct mctp *mctp, mctp_rx_fn fn, void *data);
 bool mctp_encode_ctrl_cmd_set_eid(struct mctp_ctrl_cmd_set_eid *set_eid_cmd,
 				  uint8_t rq_dgram_inst,
 				  mctp_ctrl_cmd_set_eid_op op, uint8_t eid);
+
+bool mctp_encode_ctrl_cmd_get_eid(struct mctp_ctrl_cmd_get_eid *get_eid_cmd,
+				  uint8_t rq_dgram_inst);
+
 bool mctp_encode_ctrl_cmd_get_routing_table(
 	struct mctp_ctrl_cmd_get_routing_table *get_routing_table_cmd,
 	uint8_t rq_dgram_inst, uint8_t entry_handle);
@@ -207,10 +223,13 @@ int mctp_ctrl_cmd_set_endpoint_id(struct mctp *mctp, mctp_eid_t dest_eid,
 				  struct mctp_ctrl_cmd_set_eid *request,
 				  struct mctp_ctrl_resp_set_eid *response);
 
+int mctp_ctrl_cmd_get_endpoint_id(struct mctp *mctp, mctp_eid_t dest_eid,
+				  bool bus_owner,
+				  struct mctp_ctrl_resp_get_eid *response);
+
 int mctp_ctrl_cmd_get_routing_table(struct mctp *mctp, mctp_eid_t dest_eid,
 				    struct mctp_ctrl_cmd_get_routing_table *request,
 				    struct mctp_ctrl_resp_get_routing_table *response);
-
 
 void mctp_get_routing_table(struct mctp *mctp, mctp_eid_t dest_eid,
 			    struct eid_routing_entry **table);

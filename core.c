@@ -526,6 +526,18 @@ bool mctp_encode_ctrl_cmd_set_eid(struct mctp_ctrl_cmd_set_eid *set_eid_cmd,
 	return true;
 }
 
+bool mctp_encode_ctrl_cmd_get_eid(struct mctp_ctrl_cmd_get_eid *get_eid_cmd,
+				  uint8_t rq_dgram_inst)
+{
+	if (!get_eid_cmd)
+		return false;
+
+	encode_ctrl_cmd_header(&get_eid_cmd->ctrl_hdr, rq_dgram_inst,
+			       MCTP_CTRL_CMD_GET_ENDPOINT_ID);
+	return true;
+}
+
+
 bool mctp_encode_ctrl_cmd_get_routing_table(
 	struct mctp_ctrl_cmd_get_routing_table *get_routing_table_cmd,
 	uint8_t rq_dgram_inst, uint8_t entry_handle)
@@ -594,6 +606,34 @@ int mctp_ctrl_cmd_set_endpoint_id(struct mctp *mctp, mctp_eid_t dest_eid,
 	return 0;
 }
 
+uint8_t mctp_binding_get_medium_info(struct mctp_binding *binding)
+{
+	return binding->info;
+}
+
+int mctp_ctrl_cmd_get_endpoint_id(struct mctp *mctp, mctp_eid_t dest_eid,
+				  bool bus_owner,
+				  struct mctp_ctrl_resp_get_eid *response)
+{
+	struct mctp_bus *bus = find_bus_for_eid(mctp, dest_eid);
+
+	if (response == NULL)
+		return -1;
+
+	response->eid = mctp_bus_get_eid(bus);
+	response->eid_type = 0;
+
+	if (mctp->route_policy == ROUTE_BRIDGE || bus_owner)
+		SET_ENDPOINT_TYPE(response->eid_type, MCTP_BUS_OWNER_BRIDGE);
+
+	SET_ENDPOINT_ID_TYPE(response->eid_type, MCTP_STATIC_EID);
+
+	response->medium_data = mctp_binding_get_medium_info(bus->binding);
+	response->completion_code = MCTP_CTRL_CC_SUCCESS;
+
+	return 0;
+}
+
 int mctp_ctrl_cmd_get_routing_table(struct mctp *mctp, mctp_eid_t dest_eid,
 				    struct mctp_ctrl_cmd_get_routing_table *request,
 				    struct mctp_ctrl_resp_get_routing_table *response)
@@ -623,6 +663,7 @@ int mctp_ctrl_cmd_get_routing_table(struct mctp *mctp, mctp_eid_t dest_eid,
 	response->completion_code = MCTP_CTRL_CC_SUCCESS;
 	response->next_entry_handle = 0xFF;
 
+	return 0;
 }
 
 void mctp_get_routing_table(struct mctp *mctp, mctp_eid_t dest_eid,

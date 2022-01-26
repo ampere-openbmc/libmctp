@@ -284,6 +284,23 @@ static int handle_control_get_endpoint_id(struct ctx *ctx,
 	return len;
 }
 
+static int handle_control_get_endpoint_uuid(struct ctx *ctx,
+					  struct mctp_ctrl_req *req,
+					  struct mctp_ctrl_resp *resp)
+{
+	struct mctp_ctrl_resp_get_uuid *get_uuid_resp;
+	int len, rc;
+
+	mctp_prdebug("Get endpoint UUID\n");
+
+	get_uuid_resp = (struct mctp_ctrl_resp_get_uuid *)resp;
+
+	rc = mctp_ctrl_cmd_get_endpoint_uuid(ctx->mctp, get_uuid_resp);
+	len = (rc < 0) ? 0 : sizeof(struct mctp_ctrl_resp_get_uuid);
+
+	return len;
+}
+
 static int handle_control_get_routing_table(struct ctx *ctx,
 					    struct mctp_ctrl_req *req,
 					    struct mctp_ctrl_resp *resp)
@@ -434,6 +451,9 @@ static void rx_control_message(uint8_t eid, bool tag_owner, uint8_t msg_tag,
 		break;
 	case MCTP_CTRL_CMD_GET_ENDPOINT_ID:
 		resp_len = handle_control_get_endpoint_id(ctx, req, &resp);
+		break;
+	case MCTP_CTRL_CMD_GET_ENDPOINT_UUID:
+		resp_len = handle_control_get_endpoint_uuid(ctx, req, &resp);
 		break;
 	case MCTP_CTRL_CMD_GET_ROUTING_TABLE_ENTRIES:
 		resp_len = handle_control_get_routing_table(ctx, req, &resp);

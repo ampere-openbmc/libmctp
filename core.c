@@ -74,6 +74,8 @@ struct mctp {
 	/* Control message RX callback. */
 	mctp_rx_fn control_rx;
 	void *control_rx_data;
+	/* Endpoint UUID */
+	uint8_t uuid[16];
 };
 
 #ifndef BUILD_ASSERT
@@ -532,6 +534,17 @@ bool mctp_encode_ctrl_cmd_get_eid(struct mctp_ctrl_cmd_get_eid *get_eid_cmd,
 	return true;
 }
 
+bool mctp_encode_ctrl_cmd_get_uuid(struct mctp_ctrl_cmd_get_uuid *get_uuid_cmd,
+				   uint8_t rq_dgram_inst)
+{
+	if (!get_uuid_cmd)
+		return false;
+
+	encode_ctrl_cmd_header(&get_uuid_cmd->ctrl_hdr, rq_dgram_inst,
+			       MCTP_CTRL_CMD_GET_ENDPOINT_UUID);
+	return true;
+}
+
 
 bool mctp_encode_ctrl_cmd_get_routing_table(
 	struct mctp_ctrl_cmd_get_routing_table *get_routing_table_cmd,
@@ -626,6 +639,17 @@ int mctp_ctrl_cmd_get_endpoint_id(struct mctp *mctp, mctp_eid_t dest_eid,
 	response->medium_data = mctp_binding_get_medium_info(bus->binding);
 	response->completion_code = MCTP_CTRL_CC_SUCCESS;
 
+	return 0;
+}
+
+int mctp_ctrl_cmd_get_endpoint_uuid(struct mctp *mctp,
+				    struct mctp_ctrl_resp_get_uuid *response)
+{
+	if (response == NULL)
+		return -1;
+	response->completion_code = MCTP_CTRL_CC_SUCCESS;
+	memset(response->uuid, 0, 16);
+	/* TBD: Return correct UUID */
 	return 0;
 }
 

@@ -340,9 +340,9 @@ static int send_recv_mctp_ctrl_msg(struct ctx *ctx, mctp_eid_t dest,
 	}
 	/* Read response MCTP control message */
 	while (1) {
-		rc = poll(&ctx->pollfds[FD_BINDING], 1, -1);
+		rc = poll(&ctx->pollfds[FD_BINDING], 1, 1000);
 		if (rc < 0) {
-			mctp_prdebug("poll failed\n");
+			mctp_prdebug("Poll expired, MCTP Response is not ready\n");
 			break;
 		}
 		if (ctx->pollfds[FD_BINDING].revents & POLLIN) {

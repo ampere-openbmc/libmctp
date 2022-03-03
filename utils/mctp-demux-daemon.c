@@ -37,6 +37,7 @@
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
 
 #define TIMER_TIMEOUT_SEC	30
+#define MCTP_RSP_TIMEOUT_CNT	100
 
 #define PLDM_MCTP_MSG_TYPE_MASK	0x7F
 #define PLDM_RQ_BIT		(1<<7)
@@ -333,6 +334,7 @@ static int send_recv_mctp_ctrl_msg(struct ctx *ctx, mctp_eid_t dest,
 {
 	int rc = 0;
 	int i = 0;
+	int ret;
 
 	mctp_prdebug("send_recv_mctp_ctrl_msg\n");
 	rc = mctp_message_tx(ctx->mctp, dest, MCTP_MESSAGE_TO_SRC, 0, req, len);
@@ -341,10 +343,11 @@ static int send_recv_mctp_ctrl_msg(struct ctx *ctx, mctp_eid_t dest,
 		return rc;
 	}
 	/* Read response MCTP control message */
-	while (1) {
+	ret = -1;
+	while (i < MCTP_RSP_TIMEOUT_CNT) {
 		rc = poll(&ctx->pollfds[FD_BINDING], 1, 1000);
 		if (rc < 0) {
-			mctp_prdebug("Poll expired, MCTP Response is not ready\n");
+			mctp_prdebug("Poll failed, MCTP Response is not ready\n");
 			break;
 		}
 		if (ctx->pollfds[FD_BINDING].revents & POLLIN) {
@@ -352,6 +355,7 @@ static int send_recv_mctp_ctrl_msg(struct ctx *ctx, mctp_eid_t dest,
 				rc = ctx->binding->process(ctx->binding);
 				if (!rc) {
 					mctp_prdebug("send_recv_mctp_ctrl_msg OK\n");
+					ret = 0;
 					break;
 				}
 			} else {
@@ -360,11 +364,12 @@ static int send_recv_mctp_ctrl_msg(struct ctx *ctx, mctp_eid_t dest,
 				break;
 			}
 		}
+		usleep(1000);
 		i++;
 
 	}
 
-	return rc;
+	return ret;
 }
 
 static int send_set_endpoint_id(struct ctx *ctx, mctp_eid_t new_eid,

@@ -55,8 +55,7 @@ static const mctp_eid_t local_eid_default = 8;
 static char sockname[] = "\0mctp-mux";
 
 enum {
-	FD_BINDING = 0,
-	FD_SOCKET,
+	FD_SOCKET = 0,
 	FD_SIGNAL,
 	FD_TIMER,
 	FD_NR,
@@ -345,23 +344,13 @@ static int send_recv_mctp_ctrl_msg(struct ctx *ctx, mctp_eid_t dest,
 	}
 	/* Read response MCTP control message */
 	ret = -1;
+	usleep(1000);
 	while (i < MCTP_RSP_TIMEOUT_CNT) {
-		rc = poll(&ctx->pollfds[FD_BINDING], 1, 1000);
-		if (rc < 0) {
-			mctp_prdebug("Poll failed, MCTP Response is not ready\n");
-			break;
-		}
-		if (ctx->pollfds[FD_BINDING].revents & POLLIN) {
-			if (ctx->binding->process) {
-				rc = ctx->binding->process(ctx->binding);
-				if (!rc) {
-					mctp_prdebug("send_recv_mctp_ctrl_msg OK\n");
-					ret = 0;
-					break;
-				}
-			} else {
-				rc = -1;
-				mctp_prerr("No binding process handler\n");
+		if (ctx->binding->process) {
+			rc = ctx->binding->process(ctx->binding);
+			if (!rc) {
+				mctp_prdebug("send_recv_mctp_ctrl_msg OK\n");
+				ret = 0;
 				break;
 			}
 		}
@@ -854,15 +843,6 @@ static int run_daemon(struct ctx *ctx)
 
 	ctx->pollfds = malloc(FD_NR * sizeof(struct pollfd));
 
-	if (ctx->binding->get_fd) {
-		ctx->pollfds[FD_BINDING].fd =
-			ctx->binding->get_fd(ctx->binding);
-		ctx->pollfds[FD_BINDING].events = POLLIN;
-	} else {
-		ctx->pollfds[FD_BINDING].fd = -1;
-		ctx->pollfds[FD_BINDING].events = 0;
-	}
-
 	sigemptyset(&mask);
 	sigaddset(&mask, SIGINT);
 	sigaddset(&mask, SIGTERM);
@@ -913,7 +893,12 @@ static int run_daemon(struct ctx *ctx)
 			clients_changed = false;
 		}
 
-		rc = poll(ctx->pollfds, ctx->n_clients + FD_NR, -1);
+		if (ctx->binding->process) {
+			rc = ctx->binding->process(ctx->binding);
+			if (rc < 0)
+				break;
+		}
+		rc = poll(ctx->pollfds, ctx->n_clients + FD_NR, 1);
 		if (rc < 0) {
 			warn("poll failed");
 			break;
@@ -939,14 +924,6 @@ static int run_daemon(struct ctx *ctx)
 				rc = -1;
 				break;
 			}
-		}
-
-		if (ctx->pollfds[FD_BINDING].revents) {
-			rc = 0;
-			if (ctx->binding->process)
-				rc = ctx->binding->process(ctx->binding);
-			if (rc < 0)
-				break;
 		}
 
 		for (i = 0; i < ctx->n_clients; i++) {

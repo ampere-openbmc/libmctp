@@ -302,7 +302,8 @@ int mctp_smbus_read(struct mctp_binding_smbus *smbus)
 		return -1;
 	}
 
-	return mctp_smbus_rx(smbus, buf, len);
+	mctp_smbus_rx(smbus, buf, len);
+	return 0;
 }
 
 static int mctp_smbus_write(const void *fn_data, uint8_t *buf, uint32_t len)
